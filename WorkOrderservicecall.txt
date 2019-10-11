@@ -1,0 +1,140 @@
+import { Injectable } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable, BehaviorSubject } from 'rxjs';
+import { ToastService } from '../../core/services/toast.service';
+import { ChangeOrder } from '../models/change-order';
+import { WorkOrder } from '../models/work-order';
+import { ChangeOrderHistory } from '../models/change-order-history';
+import { ChangeOrderItem } from '../models/change-order-item';
+import { ChangeOrderSave } from '../models/change-order-save';
+import { ChangeOrderItemComment } from '../models/change-order-item-comment';
+import { PriorChangeOrderSummary } from '../models/prior-change-order-summary';
+import { WorkOrderSave } from '../models/WorkOrderSave';
+import { WorkOrderStatusHistory } from '../models/WorkOrderStatusHistory';
+
+@Injectable({
+  providedIn: 'root'
+})
+export class ChangeOrderService {
+  statusRoles = {
+    'Analyst Pending': ['analyst', 'manager'],
+  };
+  validationRules = {
+    "Approved": [],
+    "Approved As Noted": [{
+      validate: (item: ChangeOrderItem) => { return item.commentAdded; }, message: "Approved as noted items must provide a comment."
+    },
+    {
+      validate: (item: ChangeOrderItem) => {
+        return item.approvedCostEstimate != null && item.approvedQuantity != null;
+      }, message: "Approved as noted items must provide an approved estimate and approved quantity"
+    },
+    {
+      validate: (item: ChangeOrderItem) => {
+        return item.approvedCostEstimate > 0;
+      }, message: "The approved amount must be  greather than 0."
+    }],
+    "Revise & Resubmit": [{ validate: (item: ChangeOrderItem) => item.commentAdded, message: "Revise and resubmit items must provide a comment." }],
+    "Declined": [{ validate: (item: ChangeOrderItem) => item.commentAdded, message: "Declined items must provide a comment." }]
+  };
+  queueName = 'change-orders';
+  currentWorkOrder = new BehaviorSubject<WorkOrder>({});
+  isEditMode = new BehaviorSubject<boolean>(false);
+  constructor(private toast: ToastService, private http: HttpClient) { }
+
+  private getChangeOrderItemComments = (items: ChangeOrderItem[]): ChangeOrderItemComment[] => {
+    let saveObject: ChangeOrderItemComment[] = [];
+
+    items.forEach((item) => {
+      saveObject = saveObject.concat(item.comments.filter(comment => comment.id == null));
+    });
+
+    return saveObject;
+  }
+
+  private createWorkOrderSaveObject = (workOrder: WorkOrder): WorkOrderSave => {
+    const saveObject: WorkOrderSave = {};
+    saveObject.workOrderId = workOrder.id;
+    saveObject.loanId = workOrder.loanId;
+    saveObject.workOrderCategories = workOrder.workOrderCategories;
+    saveObject.workOrderCategoryItems = workOrder.workOrderCategories[0].workOrderCategoryItems;
+    /*saveObject.changeOrderComments = changeOrder.comments.filter(comment => comment.id == null);
+    saveObject.changeOrderItems = changeOrder.items.filter(item => item.dirty);
+    saveObject.changeOrderItemComments = this.getChangeOrderItemComments(changeOrder.items.filter(item => item.commentAdded));*/
+
+    return saveObject;
+  }
+
+  public getValidationErrors = (changeOrder: ChangeOrder, userId: string): string[] => {
+    var items = changeOrder.items;
+    var foundErrors = [];
+    items.forEach(item => {
+      var existingRules = this.validationRules[item.expenseItemStatusName];
+      if (existingRules.length) {
+        foundErrors = existingRules.filter(rule => !rule.validate(item)).
+          map(rule => rule.message);
+      }
+
+    });
+    return foundErrors;
+  };
+
+  public getValidationError = (ChangeOrderItem: ChangeOrderItem, changeOrder: ChangeOrder): string[] => {
+    var foundErrors = [];
+    var existingRules = this.validationRules[ChangeOrderItem.expenseItemStatusName];
+    if (existingRules.length) {
+      foundErrors = existingRules.filter(rule => !rule.validate(ChangeOrderItem)).
+        map(rule => rule.message);
+    }
+    if ((changeOrder.items.some(item => item.expenseItemStatusName === "Approved As Noted") && changeOrder.items.some(item => item.expenseItemStatusName === "Revise & Resubmit"))) {
+      foundErrors.push("There cannot be a mix of Approved As Noted and Revise & Resubmit.");
+    }
+
+    return foundErrors;
+  }
+
+  public isValid = (changeOrder: ChangeOrder, userId: string): boolean => {
+    const invalidItems = changeOrder.items.some((item) => {
+      var isInvalidApprovedAsNoted = item.errors.length > 0 || item.expenseItemStatusName === "Approved As Noted"
+        && (item.approvedCostEstimate == null || !item.commentAdded);
+      var isInvalidReviseAndResubmit = item.errors.length > 0 || item.expenseItemStatusName == "Revise & Resubmit"
+        && !item.commentAdded;
+
+      return isInvalidApprovedAsNoted || isInvalidReviseAndResubmit;
+    });
+
+    return !invalidItems;
+  }
+
+  public saveChangeOrder = (changeOrder: WorkOrder): Observable<WorkOrder> => {
+    const saveObject = this.createWorkOrderSaveObject(changeOrder);
+    return this.http.put<WorkOrder>('/api/WorkOrder/SaveWorkOrder', saveObject);
+  }
+
+  public submitChangeOrder(workOrder: WorkOrder, status: string): any {
+    const saveObject = this.createWorkOrderSaveObject(workOrder);
+    return this.http.put<WorkOrder>(`/api/ChangeOrder/updateStatus/${status}`, saveObject);
+  }
+
+  public GetWorkOrderHistory = (): Observable<WorkOrderStatusHistory[]> => {
+    return this.http.get<WorkOrderStatusHistory[]>(`/api/WorkOrder/WorkOrderHistory/${this.currentWorkOrder.value.id}`);
+  }
+
+  public GetPriorWorkOrders = (): Observable<WorkOrder[]> => {
+    return this.http.get<WorkOrder[]>(`/api/WorkOrder/PriorWorkOrderSummary/${this.currentWorkOrder.value.id}`);
+  }
+
+  public GetChangeOrder = (workOrderId: string): Promise<WorkOrder> => {
+    const promise = new Promise<WorkOrder>((resolve, reject) => {
+      this.http.get<WorkOrder>(`/api/WorkOrder/${workOrderId}`).toPromise().then((workOrder: WorkOrder) => {
+        if (workOrder && !workOrder.workOrderComments.length) {
+          workOrder.workOrderComments = [];
+        }
+
+        this.currentWorkOrder.next(workOrder);
+        resolve(workOrder);
+      });
+    });
+    return promise;
+  }
+}
