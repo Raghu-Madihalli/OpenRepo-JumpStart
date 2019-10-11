@@ -13,7 +13,7 @@ import { WorkOrderSave } from '../models/WorkOrderSave';
 import { WorkOrderStatusHistory } from '../models/WorkOrderStatusHistory';
 
 @Injectable({
-  providedIn: 'root'
+  providedIn: 'roots'
 })
 export class ChangeOrderService {
   statusRoles = {
